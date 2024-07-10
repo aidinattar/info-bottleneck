@@ -9,120 +9,103 @@
 # Python version:   3.11.7                                                     #
 ################################################################################
 
-import numpy as np
-import scipy.stats as stats
-from sklearn.neighbors import NearestNeighbors
-from sklearn.metrics import mutual_info_score
 import torch
-from scipy.special import digamma
-
 import numpy as np
-import scipy.stats as stats
 from sklearn.neighbors import NearestNeighbors
-from sklearn.metrics import mutual_info_score
-import torch
-from scipy.special import digamma
+from scipy.special import digamma, logsumexp
 
 class MutualInformationCalculator:
     """Class to calculate mutual information using different methods."""
 
     def __init__(self, method='binning', bins=30, bandwidth=0.1, k=3):
-        """
-        Initialize the MutualInformationCalculator.
-
-        Parameters:
-        method (str): Method to calculate mutual information ('binning', 'kde', 'kraskov').
-        bins (int): Number of bins for the binning method (default: 30).
-        bandwidth (float): Bandwidth for the KDE method (default: 0.1).
-        k (int): Number of nearest neighbors for the Kraskov method (default: 3).
-        """
         self.method = method
         self.bins = bins
         self.bandwidth = bandwidth
         self.k = k
 
-    def mutual_info_bin(self, X, Y, nbins=30, bin_max=1, bin_min=-1):
+    def mutual_info_bin(self, input_data, layer_data, num_bins):
         """
-        Calculate mutual information by binning the data.
+        Calculate mutual information using binning.
 
-        Parameters:
-        X (array-like): Input data.
-        Y (array-like): Output data.
+        Parameters
+        ----------
+        input_data : array-like
+            Input data.
+        layer_data : array-like
+            Output data.
+        num_bins : int
+            Number of bins for binning method.
         
-        Returns:
-        float: Mutual information between X and Y.
+        Returns
+        -------
+        float : Mutual information between input_data and layer_data.
         """
-        binsize = (bin_max - bin_min) / nbins
+        def get_probabilities(data):
+            unique_ids = np.ascontiguousarray(data).view(np.dtype((np.void, data.dtype.itemsize * data.shape[1])))
+            _, unique_inverse, unique_counts = np.unique(unique_ids, return_index=False, return_inverse=True, return_counts=True)
+            return np.asarray(unique_counts / float(sum(unique_counts))), unique_inverse
 
-        # Flatten the arrays if they are not already 1-dimensional
-        if X.ndim > 1:
-            X = X.ravel()
-        if Y.ndim > 1:
-            Y = Y.ravel()
+        if input_data.ndim == 1:
+            input_data = input_data.reshape(-1, 1)
+        if layer_data.ndim == 1:
+            layer_data = layer_data.reshape(-1, 1)
 
-        # Digitize the input and output data
-        X_digitized = np.floor(X / binsize).astype('int')
-        Y_digitized = np.floor(Y / binsize).astype('int')
-
-        # Ensure that the lengths match
-        min_length = min(len(X_digitized), len(Y_digitized))
-        X_digitized = X_digitized[:min_length]
-        Y_digitized = Y_digitized[:min_length]
-
-        # Calculate the mutual information
-        c_xy = np.histogram2d(X_digitized, Y_digitized, bins=nbins)[0]
-        mi = mutual_info_score(None, None, contingency=c_xy)
-        return mi
+        p_xs, unique_inverse_x = get_probabilities(input_data)
+        bins = np.linspace(-1, 1, num_bins, dtype='float32') 
+        digitized = bins[np.digitize(np.squeeze(layer_data.reshape(1, -1)), bins) - 1].reshape(len(layer_data), -1)
+        p_ts, _ = get_probabilities(digitized)
+        
+        h_layer = -np.sum(p_ts * np.log(p_ts + np.finfo(float).eps))  # Adding epsilon to avoid log(0)
+        h_layer_given_input = 0.
+        for xval in np.arange(len(p_xs)):
+            p_t_given_x, _ = get_probabilities(digitized[unique_inverse_x == xval, :])
+            h_layer_given_input += - p_xs[xval] * np.sum(p_t_given_x * np.log(p_t_given_x + np.finfo(float).eps))
+        
+        return h_layer - h_layer_given_input
 
     def mutual_info_kde(self, X, Y):
-        """
-        Calculate mutual information using kernel density estimation.
+        def compute_pairwise_distances(matrix):
+            squared_sum = np.sum(np.square(matrix), axis=1, keepdims=True)
+            dists = squared_sum + squared_sum.T - 2 * np.dot(matrix, matrix.T)
+            return dists
 
-        Parameters:
-        X (array-like): Input data.
-        Y (array-like): Output data.
-        
-        Returns:
-        float: Mutual information between X and Y.
-        """
-        # Flatten the arrays if they are not already 1-dimensional
-        if X.ndim > 1:
-            X = X.ravel()
-        if Y.ndim > 1:
-            Y = Y.ravel()
-        
-        # Estimate densities
-        kde_X = stats.gaussian_kde(X, bw_method=self.bandwidth)
-        kde_Y = stats.gaussian_kde(Y, bw_method=self.bandwidth)
-        kde_XY = stats.gaussian_kde(np.vstack([X, Y]), bw_method=self.bandwidth)
-        
-        # Evaluate densities
-        p_X = kde_X(X)
-        p_Y = kde_Y(Y)
-        p_XY = kde_XY(np.vstack([X, Y]))
-        
-        # Ensure no zero probabilities
-        p_X = np.maximum(p_X, 1e-10)
-        p_Y = np.maximum(p_Y, 1e-10)
-        p_XY = np.maximum(p_XY, 1e-10)
-        
-        # Calculate mutual information
-        mi = np.mean(np.log(p_XY / (p_X * p_Y)))
-        return mi
+        def get_shape_info(tensor):
+            dims = float(tensor.shape[1])
+            N = float(tensor.shape[0])
+            return dims, N
+
+        def estimate_entropy_kl(tensor, var):
+            dims, N = get_shape_info(tensor)
+            dists = compute_pairwise_distances(tensor)
+            dists2 = dists / (2 * var)
+            normconst = (dims / 2.0) * np.log(2 * np.pi * var)
+            lprobs = logsumexp(-dists2, axis=1) - np.log(N) - normconst
+            h = -np.mean(lprobs)
+            return dims / 2 + h
+
+        def estimate_entropy_bd(tensor, var):
+            dims, N = get_shape_info(tensor)
+            val = estimate_entropy_kl(tensor, 4 * var)
+            return val + np.log(0.25) * dims / 2
+
+        if isinstance(X, torch.Tensor):
+            X = X.cpu().detach().numpy()
+        if isinstance(Y, torch.Tensor):
+            Y = Y.cpu().detach().numpy()
+
+        if X.ndim == 1:
+            X = X.reshape(-1, 1)
+        if Y.ndim == 1:
+            Y = Y.reshape(-1, 1)
+
+        var = self.bandwidth
+        hX = estimate_entropy_bd(X, var)
+        hY = estimate_entropy_bd(Y, var)
+        hXY = estimate_entropy_bd(np.hstack((X, Y)), var)
+
+        return hX + hY - hXY
 
     def mutual_info_kraskov(self, X, Y):
-        """
-        Calculate mutual information using the Kraskov method.
-
-        Parameters:
-        X (array-like): Input data.
-        Y (array-like): Output data.
-        k (int): Number of nearest neighbors.
-        
-        Returns:
-        float: Mutual information between X and Y.
-        """
-        # Ensure inputs are 2-dimensional
         if X.ndim == 1:
             X = X.reshape(-1, 1)
         if Y.ndim == 1:
@@ -148,41 +131,23 @@ class MutualInformationCalculator:
         return mi
 
     def calculate(self, X, Y):
-        """
-        Calculate mutual information using the specified method.
-
-        Parameters:
-        X (array-like or torch.Tensor): Input data.
-        Y (array-like or torch.Tensor): Output data.
-        
-        Returns:
-        float: Mutual information between X and Y.
-        """
         if isinstance(X, torch.Tensor):
             X = X.cpu().detach().numpy()
         if isinstance(Y, torch.Tensor):
             Y = Y.cpu().detach().numpy()
         
-        if self.method == 'binning':
-            return self.mutual_info_bin(X, Y)
-        elif self.method == 'kde':
-            return self.mutual_info_kde(X, Y)
-        elif self.method == 'kraskov':
-            return self.mutual_info_kraskov(X, Y)
-        else:
-            raise ValueError("Unknown method: choose from 'binning', 'kde', 'kraskov'")
-
-
-# Example usage with neural network outputs
-if __name__ == '__main__':
-    X = np.random.rand(1000)
-    Y = X * 0.5 + np.random.rand(1000) * 0.1
-    
-    mi_calculator = MutualInformationCalculator(method='binning')
-    print(f"Mutual Information (Binning): {mi_calculator.calculate(X, Y)}")
-    
-    mi_calculator = MutualInformationCalculator(method='kde')
-    print(f"Mutual Information (KDE): {mi_calculator.calculate(X, Y)}")
-    
-    mi_calculator = MutualInformationCalculator(method='kraskov')
-    print(f"Mutual Information (Kraskov): {mi_calculator.calculate(X, Y)}")
+        if X.shape[1] != Y.shape[1]:
+            raise ValueError("Input data and layer data must have the same number of features.")
+        
+        mi_values = []
+        for i in range(X.shape[1]):
+            if self.method == 'binning':
+                mi_values.append(self.mutual_info_bin(X[:, i], Y[:, i], self.bins))
+            elif self.method == 'kde':
+                mi_values.append(self.mutual_info_kde(X[:, i], Y[:, i]))
+            elif self.method == 'kraskov':
+                mi_values.append(self.mutual_info_kraskov(X[:, i], Y[:, i]))
+            else:
+                raise ValueError("Unknown method: choose from 'binning', 'kde', 'kraskov'")
+        
+        return np.mean(mi_values)

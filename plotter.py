@@ -9,6 +9,7 @@
 # Python version:  3.11.7                                                      #
 ################################################################################
 
+import os
 import numpy as np
 import matplotlib.pyplot as plt
 import seaborn as sns
@@ -24,25 +25,9 @@ plt.rcParams['legend.fontsize'] = 12
 
 
 class Plotter:
-    """Class to handle plotting of mutual information values."""
+    """Class to handle plotting of mutual information and training statistics."""
 
     def __init__(self, mi_values, train_losses, val_losses, train_accuracies, val_accuracies):
-        """
-        Initialize the Plotter.
-
-        Parameters
-        ----------
-        mi_values : dict
-            Dictionary containing mutual information values.
-        train_losses : list
-            List of training losses over epochs.
-        val_losses : list
-            List of validation losses over epochs.
-        train_accuracies : list
-            List of training accuracies over epochs.
-        val_accuracies : list
-            List of validation accuracies over epochs.
-        """
         self.mi_values = mi_values
         self.train_losses = train_losses
         self.val_losses = val_losses
@@ -50,72 +35,91 @@ class Plotter:
         self.val_accuracies = val_accuracies
 
     def plot_information_plane(self, save_path=None):
-        """Plot the information plane showing I(X;T) and I(T;Y) for each layer and epoch."""
+        """
+        Plot the information plane I(X;T) vs I(T;Y).
+
+        Parameters
+        ----------
+        save_path : str
+            Path to save the plot.
+        """
+        plt.figure(figsize=(10, 6))
+        
+        epochs = self.mi_values['epochs']
         I_XT = np.array(self.mi_values['I(X;T)'])
         I_TY = np.array(self.mi_values['I(T;Y)'])
-        epochs = np.array(self.mi_values['epochs'])
-        num_layers = I_XT.shape[1]
 
-        plt.figure(figsize=(10, 8))
-        for layer in range(num_layers):
-            plt.scatter(I_XT[:, layer], I_TY[:, layer], c=epochs, cmap='viridis', label=f'Layer {layer+1}', edgecolors='k', s=50)
-
-        plt.colorbar(label='Epoch')
+        # Plot points with color mapping to epoch
+        scatter = plt.scatter(I_XT.flatten(), I_TY.flatten(), c=np.repeat(epochs, I_XT.shape[1]), cmap='viridis', s=10)
+        plt.colorbar(scatter, label='Epoch')
+        
         plt.xlabel('I(X;T)')
         plt.ylabel('I(T;Y)')
         plt.title('Information Plane')
-        plt.legend()
-        # plt.show()
         if save_path:
+            os.makedirs(os.path.dirname(save_path), exist_ok=True)
             plt.savefig(save_path)
+        plt.show()
 
     def plot_loss_accuracy(self, save_path=None):
-        """Plot the training and validation loss and accuracy over epochs."""
+        """
+        Plot the training and validation loss and accuracy.
+
+        Parameters
+        ----------
+        save_path : str
+            Path to save the plot.
+        """
         epochs = range(1, len(self.train_losses) + 1)
+        fig, ax1 = plt.subplots()
 
-        plt.figure(figsize=(12, 6))
+        color = 'tab:red'
+        ax1.set_xlabel('Epoch')
+        ax1.set_ylabel('Loss', color=color)
+        ax1.plot(epochs, self.train_losses, 'r-', label='Train Loss')
+        if self.val_losses:
+            ax1.plot(epochs, self.val_losses, 'r--', label='Val Loss')
+        ax1.tick_params(axis='y', labelcolor=color)
+        ax1.legend(loc='upper left')
 
-        # Plot training and validation loss
-        plt.subplot(1, 2, 1)
-        plt.plot(epochs, self.train_losses, label='Training Loss')
-        plt.plot(epochs, self.val_losses, label='Validation Loss')
-        plt.xlabel('Epochs')
-        plt.ylabel('Loss')
-        plt.title('Training and Validation Loss')
-        plt.legend()
+        ax2 = ax1.twinx()
+        color = 'tab:blue'
+        ax2.set_ylabel('Accuracy', color=color)
+        ax2.plot(epochs, self.train_accuracies, 'b-', label='Train Accuracy')
+        if self.val_accuracies:
+            ax2.plot(epochs, self.val_accuracies, 'b--', label='Val Accuracy')
+        ax2.tick_params(axis='y', labelcolor=color)
+        ax2.legend(loc='upper right')
 
-        # Plot training and validation accuracy
-        plt.subplot(1, 2, 2)
-        plt.plot(epochs, self.train_accuracies, label='Training Accuracy')
-        plt.plot(epochs, self.val_accuracies, label='Validation Accuracy')
-        plt.xlabel('Epochs')
-        plt.ylabel('Accuracy')
-        plt.title('Training and Validation Accuracy')
-        plt.legend()
-
-        plt.tight_layout()
-        # plt.show()
+        fig.tight_layout()
         if save_path:
+            os.makedirs(os.path.dirname(save_path), exist_ok=True)
             plt.savefig(save_path)
+        plt.show()
 
-    def plot_mutual_information_layer(self, layer_index, save_path=None):
-        """Plot the mutual information I(X;T) and I(T;Y) for a specific layer over epochs.
+    def plot_mutual_information_layer(self, layer_index=0, save_path=None):
+        """
+        Plot mutual information for a specific layer across epochs.
 
         Parameters
         ----------
         layer_index : int
-            Index of the layer to plot mutual information for.
+            Index of the layer to plot.
+        save_path : str
+            Path to save the plot.
         """
-        I_XT = np.array(self.mi_values['I(X;T)'])[:, layer_index]
-        I_TY = np.array(self.mi_values['I(T;Y)'])[:, layer_index]
-        epochs = np.array(self.mi_values['epochs'])
+        epochs = range(1, len(self.mi_values['epochs']) + 1)
+        I_XT_layer = [mi[layer_index] for mi in self.mi_values['I(X;T)']]
+        I_TY_layer = [mi[layer_index] for mi in self.mi_values['I(T;Y)']]
 
         plt.figure(figsize=(10, 6))
-        plt.plot(epochs, I_XT, label='I(X;T)')
-        plt.plot(epochs, I_TY, label='I(T;Y)')
-        plt.xlabel('Epochs')
+        plt.plot(epochs, I_XT_layer, label=f'I(X;T) - Layer {layer_index + 1}')
+        plt.plot(epochs, I_TY_layer, label=f'I(T;Y) - Layer {layer_index + 1}')
+        plt.xlabel('Epoch')
         plt.ylabel('Mutual Information')
         plt.title(f'Mutual Information for Layer {layer_index + 1}')
         plt.legend()
         if save_path:
+            os.makedirs(os.path.dirname(save_path), exist_ok=True)
             plt.savefig(save_path)
+        plt.show()

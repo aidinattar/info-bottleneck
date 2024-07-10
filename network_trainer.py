@@ -10,6 +10,7 @@
 # Python version:   3.11.7                                                     #
 ################################################################################
 
+import json
 import torch
 import torch.nn as nn
 import torch.optim as optim
@@ -19,15 +20,23 @@ from mutual_information import MutualInformationCalculator
 from plotter import Plotter
 
 
-import torch
-import torch.optim as optim
-from torch.utils.data import DataLoader
-import numpy as np
-
 class NetworkTrainer:
     """Parent class for training neural networks and calculating mutual information."""
 
-    def __init__(self, model, train_loader, val_loader=None, criterion=None, optimizer=None, epochs=10, device='cpu', mi_method='binning'):
+    def __init__(
+        self,
+        model,
+        train_loader,
+        val_loader=None,
+        criterion=None,
+        optimizer=None,
+        epochs=10,
+        device='cuda',
+        mi_method='binning',
+        activation_path='activations.json',
+        mi_values_path='mi_values.json',
+        verbose=True
+    ):
         """
         Initialize the NetworkTrainer.
 
@@ -46,7 +55,7 @@ class NetworkTrainer:
         epochs : int, optional
             Number of epochs to train the model.
         device : str, optional
-            Device to use for training (default: 'cpu').
+            Device to use for training (default: 'cuda').
         mi_method : str, optional
             Method to calculate mutual information ('binning', 'kde', 'kraskov').
         """
@@ -64,19 +73,33 @@ class NetworkTrainer:
         self.mi_calculator = MutualInformationCalculator(method=mi_method)
         self.mi_values = {'I(X;T)': [], 'I(T;Y)': [], 'epochs': []}
         self.activations = {}
-
-    def _hook(self, layer_name):
-        def hook(module, input, output):
-            self.activations[layer_name] = output
-        return hook
+        self.activation_path = activation_path
+        self.mi_values_path = mi_values_path
+        self.verbose = verbose
 
     def register_hooks(self):
-        """Register hooks to capture activations for specific layers."""
+        """Register hooks to capture activations of each layer."""
+
+        def get_activation(name):
+            def hook(model, input, output):
+                self.activations[name] = output.detach().cpu().numpy()
+            return hook
+
         hooks = []
-        for name, layer in self.model.named_modules():
-            if isinstance(layer, (nn.Linear, nn.Conv2d)):
-                hooks.append(layer.register_forward_hook(self._hook(name)))
+        for name, layer in self.model.named_children():
+            if isinstance(layer, (nn.Linear, nn.ReLU)):  # Register hooks for Linear and ReLU layers
+                hooks.append(layer.register_forward_hook(get_activation(name)))
         return hooks
+
+    def save_activations(self):
+        """Save activations to file."""
+        with open(self.activation_path, 'w') as f:
+            json.dump({k: v.tolist() for k, v in self.activations.items()}, f)
+
+    def save_mi_values(self):
+        """Save mutual information values to file."""
+        with open(self.mi_values_path, 'w') as f:
+            json.dump(self.mi_values, f)
 
     def train_epoch(self):
         """Train the model for one epoch."""
@@ -132,6 +155,8 @@ class NetworkTrainer:
                   f'\tVal Loss: {self.val_losses[-1] if self.val_losses else "N/A":.4f}, '
                   f'\tVal Accuracy: {self.val_accuracies[-1] if self.val_accuracies else "N/A":.2f}%')
             self.calculate_mutual_information(epoch)
+            self.save_activations()
+            self.save_mi_values()
 
     def calculate_mutual_information(self, epoch):
         """
@@ -147,7 +172,7 @@ class NetworkTrainer:
         hooks = self.register_hooks()
 
         with torch.no_grad():
-            for data, _ in self.train_loader:
+            for data, target in self.train_loader:
                 data = data.to(self.device)
                 self.model(data)  # Forward pass to trigger hooks
                 break  # Only need a single batch to get the activations
@@ -160,13 +185,20 @@ class NetworkTrainer:
         I_TY = []
 
         input_data = data.cpu().numpy().reshape(data.size(0), -1)  # Flatten the input data
+        target_data = target.cpu().numpy().reshape(-1, 1)  # Reshape target data to match batch size
+
+        print(f"Debug: Input data shape: {input_data.shape}, Target data shape: {target_data.shape}")  # Debug statement
 
         for layer_name, activation in self.activations.items():
-            activations_flattened = activation.cpu().detach().numpy().reshape(activation.size(0), -1)  # Flatten activations
+            activations_flattened = activation.reshape(activation.shape[0], -1)  # Flatten activations
+            print(f"Debug: Layer: {layer_name}, Activation shape: {activations_flattened.shape}")  # Debug statement
+            
             mi_input = self.mi_calculator.calculate(input_data, activations_flattened)
-            mi_output = self.mi_calculator.calculate(activations_flattened, input_data)
+            mi_output = self.mi_calculator.calculate(activations_flattened, target_data)
             I_XT.append(mi_input)
             I_TY.append(mi_output)
+            if self.verbose:
+                print(f"Layer: {layer_name}, MI Input: {mi_input}, MI Output: {mi_output}")  # Debug statement
         
         self.mi_values['I(X;T)'].append(I_XT)
         self.mi_values['I(T;Y)'].append(I_TY)
