@@ -63,7 +63,7 @@ class NetworkTrainer:
         self.train_loader = train_loader
         self.val_loader = val_loader
         self.criterion = criterion or nn.CrossEntropyLoss()
-        self.optimizer = optimizer or optim.SGD(model.parameters(), lr=0.01, momentum=0.9)
+        self.optimizer = optimizer or optim.SGD(model.parameters(), lr=0.001, momentum=0.9)
         self.epochs = epochs
         self.device = device
         self.train_losses = []
@@ -191,7 +191,8 @@ class NetworkTrainer:
 
         for layer_name, activation in self.activations.items():
             activations_flattened = activation.reshape(activation.shape[0], -1)  # Flatten activations
-            print(f"Debug: Layer: {layer_name}, Activation shape: {activations_flattened.shape}")  # Debug statement
+            if self.verbose:
+                print(f"Debug: Layer: {layer_name}, Activation shape: {activations_flattened.shape}")  # Debug statement
             
             mi_input = self.mi_calculator.calculate(input_data, activations_flattened)
             mi_output = self.mi_calculator.calculate(activations_flattened, target_data)
