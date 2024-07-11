@@ -51,24 +51,46 @@ class MutualInformationCalculator:
             layer_data = layer_data.reshape(-1, 1)
 
         p_xs, unique_inverse_x = get_probabilities(input_data)
-        print(p_xs, unique_inverse_x)
         
         bins = np.linspace(-1, 1, num_bins, dtype='float32')
         digitized_layer = bins[np.digitize(np.squeeze(layer_data.reshape(1, -1)), bins) - 1].reshape(len(layer_data), -1)
-        print(digitized_layer)
         
         p_ts, _ = get_probabilities(digitized_layer)
-        print(p_ts)
         
         h_layer = -np.sum(p_ts * np.log(p_ts + np.finfo(float).eps))  # Adding epsilon to avoid log(0)
-        print(h_layer)
         h_layer_given_input = 0.
         for xval in np.arange(len(p_xs)):
             p_t_given_x, _ = get_probabilities(digitized_layer[unique_inverse_x == xval, :])
             h_layer_given_input += - p_xs[xval] * np.sum(p_t_given_x * np.log(p_t_given_x + np.finfo(float).eps))
-            print(h_layer_given_input)
 
         return h_layer - h_layer_given_input
+    
+    def mutual_info_bin2(self, labelixs, layerdata, binsize):
+        """
+        Calculate mutual information using binning.
+
+        Parameters
+        ----------
+        labels : array-like
+            labels data.
+        layer_data : array-like
+            Output data.
+        binsize : int
+            Size of the bins for binning method.
+        """
+        def get_probabilities(data):
+            unique_ids = np.ascontiguousarray(data).view(np.dtype((np.void, data.dtype.itemsize * data.shape[1])))
+            _, unique_inverse, unique_counts = np.unique(unique_ids, return_index=False, return_inverse=True, return_counts=True)
+            return np.asarray(unique_counts / float(sum(unique_counts))), unique_inverse
+        def get_h(data, binsize):
+            digitized = np.floor(data / binsize).astype('int')
+            p_ts, _ = get_probabilities(digitized)
+            return -np.sum(p_ts * np.log(p_ts + np.finfo(float).eps))
+        H_LAYER = get_h(layerdata, binsize)
+        H_LAYER_GIVEN_OUTPUT = 0
+        for label, ixs in labelixs.items():
+            H_LAYER_GIVEN_OUTPUT += ixs.mean() * get_h(layerdata[ixs, :], binsize)
+        return H_LAYER, H_LAYER - H_LAYER_GIVEN_OUTPUT
 
     def kde_mutual_info(self, X, Y, bandwidth):
         """
@@ -89,41 +111,41 @@ class MutualInformationCalculator:
             Mutual information between X and Y.
         """
         raise NotImplementedError("Not implemented yet")
-        # def compute_pairwise_distances(matrix):
-        #     squared_sum = np.sum(np.square(matrix), axis=1, keepdims=True)
-        #     dists = squared_sum + squared_sum.T - 2 * np.dot(matrix, matrix.T)
-        #     return dists
+        def compute_pairwise_distances(matrix):
+            squared_sum = np.sum(np.square(matrix), axis=1, keepdims=True)
+            dists = squared_sum + squared_sum.T - 2 * np.dot(matrix, matrix.T)
+            return dists
 
-        # def get_shape_info(tensor):
-        #     dims = float(tensor.shape[1])
-        #     N = float(tensor.shape[0])
-        #     return dims, N
+        def get_shape_info(tensor):
+            dims = float(tensor.shape[1])
+            N = float(tensor.shape[0])
+            return dims, N
 
-        # def estimate_entropy_kl(tensor, var):
-        #     dims, N = get_shape_info(tensor)
-        #     dists = compute_pairwise_distances(tensor)
-        #     dists2 = dists / (2 * var)
-        #     normconst = (dims / 2.0) * np.log(2 * np.pi * var)
-        #     lprobs = logsumexp(-dists2, axis=1) - np.log(N) - normconst
-        #     h = -np.mean(lprobs)
-        #     return dims / 2 + h
+        def estimate_entropy_kl(tensor, var):
+            dims, N = get_shape_info(tensor)
+            dists = compute_pairwise_distances(tensor)
+            dists2 = dists / (2 * var)
+            normconst = (dims / 2.0) * np.log(2 * np.pi * var)
+            lprobs = logsumexp(-dists2, axis=1) - np.log(N) - normconst
+            h = -np.mean(lprobs)
+            return dims / 2 + h
 
-        # def estimate_entropy_bd(tensor, var):
-        #     dims, N = get_shape_info(tensor)
-        #     val = estimate_entropy_kl(tensor, 4 * var)
-        #     return val + np.log(0.25) * dims / 2
+        def estimate_entropy_bd(tensor, var):
+            dims, N = get_shape_info(tensor)
+            val = estimate_entropy_kl(tensor, 4 * var)
+            return val + np.log(0.25) * dims / 2
 
-        # if isinstance(X, torch.Tensor):
-        #     X = X.cpu().detach().numpy()
-        # if isinstance(Y, torch.Tensor):
-        #     Y = Y.cpu().detach().numpy()
+        if isinstance(X, torch.Tensor):
+            X = X.cpu().detach().numpy()
+        if isinstance(Y, torch.Tensor):
+            Y = Y.cpu().detach().numpy()
 
-        # var = bandwidth
-        # hX = estimate_entropy_bd(X, var)
-        # hY = estimate_entropy_bd(Y, var)
-        # hXY = estimate_entropy_bd(np.hstack((X, Y)), var)
+        var = bandwidth
+        hX = estimate_entropy_bd(X, var)
+        hY = estimate_entropy_bd(Y, var)
+        hXY = estimate_entropy_bd(np.hstack((X, Y)), var)
 
-        # return hX + hY - hXY
+        return hX + hY - hXY
 
     def mutual_info_kraskov(self, X, Y):
         """
@@ -203,6 +225,12 @@ class MutualInformationCalculator:
             except Exception as e:
                 print(f"Error in Kraskov method: {e}")
                 return 0.0
+        elif self.method == 'binning2':
+            try:
+                return self.mutual_info_bin2(X, Y, 0.5)
+            except Exception as e:
+                print(f"Error in binning2 method: {e}")
+                return 0.0
         else:
             raise ValueError("Unknown method: choose from 'binning', 'kde', 'kraskov'")
 
@@ -219,3 +247,10 @@ if __name__ == '__main__':
     
     mi_calculator = MutualInformationCalculator(method='kraskov')
     print(f"Mutual Information (Kraskov): {mi_calculator.calculate(X, Y)}")
+
+    mi_calculator = MutualInformationCalculator(method='binning2')
+    mi = mi_calculator.calculate(
+        {0: np.arange(50), 1: np.arange(50, 100)},
+        Y
+    )
+    print(f"Mutual Information (Binning2): {mi}")

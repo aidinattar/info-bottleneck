@@ -36,11 +36,11 @@ class Plotter:
 
     def plot_information_plane(self, save_path=None):
         """
-        Plot the information plane I(X;T) vs I(T;Y).
+        Plot the information plane I(X;T) vs I(T;Y) with points connected within the same epoch.
 
         Parameters
         ----------
-        save_path : str
+        save_path : str, optional
             Path to save the plot.
         """
         plt.figure(figsize=(10, 6))
@@ -49,10 +49,15 @@ class Plotter:
         I_XT = np.array(self.mi_values['I(X;T)'])
         I_TY = np.array(self.mi_values['I(T;Y)'])
 
-        # Plot points with color mapping to epoch
+        # Create a scatter plot with color mapping to epoch
         scatter = plt.scatter(I_XT.flatten(), I_TY.flatten(), c=np.repeat(epochs, I_XT.shape[1]), cmap='viridis', s=10)
         plt.colorbar(scatter, label='Epoch')
         
+        # Plot points and lines connecting points within the same epoch
+        colormap = plt.cm.viridis
+        for epoch in range(len(epochs)):
+            plt.plot(I_XT[epoch], I_TY[epoch], marker='o', linestyle='-', color=colormap(epoch / len(epochs)))
+
         plt.xlabel('I(X;T)')
         plt.ylabel('I(T;Y)')
         plt.title('Information Plane')

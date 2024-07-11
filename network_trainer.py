@@ -11,6 +11,7 @@
 ################################################################################
 
 import json
+import os
 import torch
 import torch.nn as nn
 import torch.optim as optim
@@ -35,7 +36,9 @@ class NetworkTrainer:
         mi_method='binning',
         activation_path='activations.json',
         mi_values_path='mi_values.json',
-        verbose=True
+        verbose=True,
+        save_dir='results',
+        do_save_func=None
     ):
         """
         Initialize the NetworkTrainer.
@@ -58,12 +61,16 @@ class NetworkTrainer:
             Device to use for training (default: 'cuda').
         mi_method : str, optional
             Method to calculate mutual information ('binning', 'kde', 'kraskov').
+        save_dir : str, optional
+            Directory to save training logs.
+        do_save_func : callable, optional
+            Function that returns True if data should be saved on the current epoch.
         """
         self.model = model.to(device)
         self.train_loader = train_loader
         self.val_loader = val_loader
         self.criterion = criterion or nn.CrossEntropyLoss()
-        self.optimizer = optimizer or optim.SGD(model.parameters(), lr=0.001, momentum=0.9)
+        self.optimizer = optimizer or optim.SGD(model.parameters(), lr=0.01, momentum=0.9)
         self.epochs = epochs
         self.device = device
         self.train_losses = []
@@ -73,9 +80,13 @@ class NetworkTrainer:
         self.mi_calculator = MutualInformationCalculator(method=mi_method)
         self.mi_values = {'I(X;T)': [], 'I(T;Y)': [], 'epochs': []}
         self.activations = {}
-        self.activation_path = activation_path
-        self.mi_values_path = mi_values_path
+        self.activation_path = os.path.join(save_dir, activation_path)
+        self.mi_values_path = os.path.join(save_dir, mi_values_path)
         self.verbose = verbose
+        self.save_dir = save_dir
+        self.do_save_func = do_save_func
+        if not os.path.exists(self.save_dir):
+            os.makedirs(self.save_dir)
 
     def register_hooks(self):
         """Register hooks to capture activations of each layer."""
@@ -87,7 +98,7 @@ class NetworkTrainer:
 
         hooks = []
         for name, layer in self.model.named_children():
-            if isinstance(layer, (nn.Linear, nn.ReLU)):  # Register hooks for Linear and ReLU layers
+            if isinstance(layer, (nn.Linear)):  # Register hooks for Linear and ReLU layers
                 hooks.append(layer.register_forward_hook(get_activation(name)))
         return hooks
 
@@ -100,6 +111,19 @@ class NetworkTrainer:
         """Save mutual information values to file."""
         with open(self.mi_values_path, 'w') as f:
             json.dump(self.mi_values, f)
+
+    def save_epoch_data(self, epoch, loss, grad_data):
+        """Save epoch data to file."""
+        fname = os.path.join(self.save_dir, f"epoch{epoch:08d}.json")
+        print(f"Saving {fname}")
+        data = {
+            'epoch': epoch,
+            'loss': loss,
+            'grad_data': grad_data,
+            'activations': {k: v.tolist() for k, v in self.activations.items()}
+        }
+        with open(fname, 'w') as f:
+            json.dump(data, f)
 
     def train_epoch(self):
         """Train the model for one epoch."""
@@ -157,6 +181,15 @@ class NetworkTrainer:
             self.calculate_mutual_information(epoch)
             self.save_activations()
             self.save_mi_values()
+            if self.do_save_func and self.do_save_func(epoch):
+                grad_data = self.collect_gradients()
+                loss = {
+                    'train_loss': self.train_losses[-1],
+                    'val_loss': self.val_losses[-1] if self.val_losses else None,
+                    'train_accuracy': self.train_accuracies[-1],
+                    'val_accuracy': self.val_accuracies[-1] if self.val_accuracies else None,
+                }
+                self.save_epoch_data(epoch, loss, grad_data)
 
     def calculate_mutual_information(self, epoch):
         """
@@ -172,10 +205,15 @@ class NetworkTrainer:
         hooks = self.register_hooks()
 
         with torch.no_grad():
-            for data, target in self.train_loader:
+            for data, target in self.val_loader:
                 data = data.to(self.device)
                 self.model(data)  # Forward pass to trigger hooks
                 break  # Only need a single batch to get the activations
+
+        # Save indexes of test data for each of the output classes
+        saved_labelixs = {}
+        for i in range(10):
+            saved_labelixs[i] = target.cpu().numpy() == i
 
         # Remove hooks
         for hook in hooks:
@@ -187,15 +225,17 @@ class NetworkTrainer:
         input_data = data.cpu().numpy().reshape(data.size(0), -1)  # Flatten the input data
         target_data = target.cpu().numpy().reshape(-1, 1)  # Reshape target data to match batch size
 
-        print(f"Debug: Input data shape: {input_data.shape}, Target data shape: {target_data.shape}")  # Debug statement
+        if self.verbose:
+            print(f"Debug: Input data shape: {input_data.shape}, Target data shape: {target_data.shape}")  # Debug statement
 
         for layer_name, activation in self.activations.items():
             activations_flattened = activation.reshape(activation.shape[0], -1)  # Flatten activations
             if self.verbose:
                 print(f"Debug: Layer: {layer_name}, Activation shape: {activations_flattened.shape}")  # Debug statement
             
-            mi_input = self.mi_calculator.calculate(input_data, activations_flattened)
-            mi_output = self.mi_calculator.calculate(activations_flattened, target_data)
+            # mi_input = self.mi_calculator.calculate(input_data, activations_flattened)
+            # mi_output = self.mi_calculator.calculate(activations_flattened, target_data)
+            mi_input, mi_output = self.mi_calculator.calculate(saved_labelixs, activations_flattened)
             I_XT.append(mi_input)
             I_TY.append(mi_output)
             if self.verbose:
@@ -204,6 +244,15 @@ class NetworkTrainer:
         self.mi_values['I(X;T)'].append(I_XT)
         self.mi_values['I(T;Y)'].append(I_TY)
         self.mi_values['epochs'].append(epoch)
+
+    def collect_gradients(self):
+        """Collect gradients for the current model."""
+        self.model.zero_grad()
+        grad_data = {}
+        for name, param in self.model.named_parameters():
+            if param.grad is not None:
+                grad_data[name] = param.grad.data.cpu().numpy().tolist()
+        return grad_data
 
     def get_plotter(self):
         """Return a Plotter instance initialized with the training data."""
