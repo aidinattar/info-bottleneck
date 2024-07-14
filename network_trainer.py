@@ -12,11 +12,10 @@
 
 import json
 import os
+import time
 import torch
 import torch.nn as nn
 import torch.optim as optim
-import numpy as np
-from tqdm import tqdm
 from mutual_information import MutualInformationCalculator
 from plotter import Plotter
 
@@ -70,7 +69,7 @@ class NetworkTrainer:
         self.train_loader = train_loader
         self.val_loader = val_loader
         self.criterion = criterion or nn.CrossEntropyLoss()
-        self.optimizer = optimizer or optim.SGD(model.parameters(), lr=0.01, momentum=0.9)
+        self.optimizer = optimizer or optim.SGD(model.parameters(), lr=0.001, momentum=0.)
         self.epochs = epochs
         self.device = device
         self.train_losses = []
@@ -88,6 +87,15 @@ class NetworkTrainer:
         if not os.path.exists(self.save_dir):
             os.makedirs(self.save_dir)
 
+        # Initialize weights
+        self.model.apply(self.weights_init)
+
+    def weights_init(self, m):
+        """Initialize the weights of the model."""
+        if isinstance(m, nn.Linear):
+            nn.init.xavier_uniform_(m.weight)
+            nn.init.zeros_(m.bias)
+
     def register_hooks(self):
         """Register hooks to capture activations of each layer."""
 
@@ -97,8 +105,8 @@ class NetworkTrainer:
             return hook
 
         hooks = []
-        for name, layer in self.model.named_children():
-            if isinstance(layer, (nn.Linear)):  # Register hooks for Linear and ReLU layers
+        for name, layer in self.model.named_modules():
+            if isinstance(layer, (nn.ReLU, nn.Tanh, nn.Softmax)):  # Register hooks for Linear and ReLU layers
                 hooks.append(layer.register_forward_hook(get_activation(name)))
         return hooks
 
@@ -170,10 +178,15 @@ class NetworkTrainer:
     def train(self):
         """Train the model."""
         for epoch in range(self.epochs):
+            # take the time before the epoch starts
+            start_time = time.time()
             self.train_epoch()
             if self.val_loader:
                 self.validate_epoch()
+            # take the time after the epoch ends
+            end_time = time.time()
             print(f'Epoch {epoch+1}/{self.epochs},\n'
+                  f'\tTime: {end_time - start_time:.2f}s, '
                   f'\tTrain Loss: {self.train_losses[-1]:.4f}, '
                   f'\tTrain Accuracy: {self.train_accuracies[-1]:.2f}%, '
                   f'\tVal Loss: {self.val_losses[-1] if self.val_losses else "N/A":.4f}, '
@@ -244,6 +257,9 @@ class NetworkTrainer:
         self.mi_values['I(X;T)'].append(I_XT)
         self.mi_values['I(T;Y)'].append(I_TY)
         self.mi_values['epochs'].append(epoch)
+
+        if self.verbose:
+            print(f"Epoch {epoch}, I(X;T): {I_XT}, I(T;Y): {I_TY}")  # Debug statement
 
     def collect_gradients(self):
         """Collect gradients for the current model."""
