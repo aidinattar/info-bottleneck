@@ -225,5 +225,7 @@ plots/
 plots/*
 test.ipynb
 *.json
+plots*
+results*
 
 # End of https://www.toptal.com/developers/gitignore/api/python,visualstudiocode,jupyternotebooks,data
