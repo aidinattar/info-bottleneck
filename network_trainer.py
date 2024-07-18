@@ -37,7 +37,11 @@ class NetworkTrainer:
         mi_values_path='mi_values.json',
         verbose=True,
         save_dir='results',
-        do_save_func=None
+        do_save_func=None,
+        lr=0.001,
+        momentum=0.9,
+        save_activation=False,
+        optimizer_name='sgd'
     ):
         """
         Initialize the NetworkTrainer.
@@ -69,7 +73,13 @@ class NetworkTrainer:
         self.train_loader = train_loader
         self.val_loader = val_loader
         self.criterion = criterion or nn.CrossEntropyLoss()
-        self.optimizer = optimizer or optim.SGD(model.parameters(), lr=0.001, momentum=0.)
+        if optimizer_name == 'sgd':
+            optimizer = optim.SGD(model.parameters(), lr=lr, momentum=momentum)
+        elif optimizer_name == 'adam':
+            optimizer = optim.Adam(model.parameters(), lr=lr)
+        else:
+            raise ValueError(f"Unknown optimizer: {optimizer_name}")
+        self.optimizer = optimizer or optim.SGD(model.parameters(), lr=lr, momentum=momentum)
         self.epochs = epochs
         self.device = device
         self.train_losses = []
@@ -84,6 +94,7 @@ class NetworkTrainer:
         self.verbose = verbose
         self.save_dir = save_dir
         self.do_save_func = do_save_func
+        self.save_activation = save_activation
         if not os.path.exists(self.save_dir):
             os.makedirs(self.save_dir)
 
@@ -93,6 +104,10 @@ class NetworkTrainer:
     def weights_init(self, m):
         """Initialize the weights of the model."""
         if isinstance(m, nn.Linear):
+            nn.init.xavier_uniform_(m.weight)
+            nn.init.zeros_(m.bias)
+
+        if isinstance(m, nn.Conv2d):
             nn.init.xavier_uniform_(m.weight)
             nn.init.zeros_(m.bias)
 
@@ -123,7 +138,7 @@ class NetworkTrainer:
     def save_epoch_data(self, epoch, loss, grad_data):
         """Save epoch data to file."""
         fname = os.path.join(self.save_dir, f"epoch{epoch:08d}.json")
-        print(f"Saving {fname}")
+        print(f"\tSaving {fname}")
         data = {
             'epoch': epoch,
             'loss': loss,
@@ -192,17 +207,22 @@ class NetworkTrainer:
                   f'\tVal Loss: {self.val_losses[-1] if self.val_losses else "N/A":.4f}, '
                   f'\tVal Accuracy: {self.val_accuracies[-1] if self.val_accuracies else "N/A":.2f}%')
             self.calculate_mutual_information(epoch)
-            self.save_activations()
+            if self.save_activation:
+                self.save_activations()
             self.save_mi_values()
-            if self.do_save_func and self.do_save_func(epoch):
-                grad_data = self.collect_gradients()
-                loss = {
-                    'train_loss': self.train_losses[-1],
-                    'val_loss': self.val_losses[-1] if self.val_losses else None,
-                    'train_accuracy': self.train_accuracies[-1],
-                    'val_accuracy': self.val_accuracies[-1] if self.val_accuracies else None,
-                }
-                self.save_epoch_data(epoch, loss, grad_data)
+            if self.save_activation:
+                if self.do_save_func and self.do_save_func(epoch):
+                    grad_data = self.collect_gradients()
+                    loss = {
+                        'train_loss': self.train_losses[-1],
+                        'val_loss': self.val_losses[-1] if self.val_losses else None,
+                        'train_accuracy': self.train_accuracies[-1],
+                        'val_accuracy': self.val_accuracies[-1] if self.val_accuracies else None,
+                    }
+                    self.save_epoch_data(epoch, loss, grad_data)
+
+            end_time = time.time()
+            print(f"\tTime taken for epoch {epoch+1}: {end_time - start_time:.2f}s")
 
     def calculate_mutual_information(self, epoch):
         """
